@@ -3,6 +3,7 @@ package steam
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -58,7 +59,7 @@ type Client struct {
 	writeBuf  *bytes.Buffer
 	heartbeat *time.Ticker
 
-	Proxy  proxy.Dialer
+	Proxy  proxy.ContextDialer
 	manual bool
 }
 
@@ -116,7 +117,9 @@ func (c *Client) Events() <-chan interface{} {
 }
 
 func (c *Client) Emit(event interface{}) {
-	c.events <- event
+	if !c.manual {
+		c.events <- event
+	}
 }
 
 // Emits a FatalErrorEvent formatted with fmt.Errorf and disconnects.
@@ -149,10 +152,11 @@ func (c *Client) SessionId() int32 {
 	return atomic.LoadInt32(&c.sessionId)
 }
 
-func (c *Client) Connected() bool {
+func (c *Client) Connected() (ok bool) {
 	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-	return c.Conn != nil
+	ok = c.Conn != nil
+	c.mutex.RUnlock()
+	return
 }
 
 // Connects to a random Steam server and returns its address.
@@ -160,7 +164,7 @@ func (c *Client) Connected() bool {
 // This method tries to use an address from the Steam Directory and falls
 // back to the built-in server list if the Steam Directory can't be reached.
 // If you want to connect to a specific server, use `ConnectTo`.
-func (c *Client) Connect() (*netutil.PortAddr, error) {
+func (c *Client) Connect(ctx context.Context) (*netutil.PortAddr, error) {
 	var server *netutil.PortAddr
 
 	// try to initialize the directory cache
@@ -173,23 +177,23 @@ func (c *Client) Connect() (*netutil.PortAddr, error) {
 		server = GetRandomCM()
 	}
 
-	err := c.ConnectTo(server)
+	err := c.ConnectTo(server, ctx)
 	return server, err
 }
 
 // Connects to a specific server.
 // You may want to use one of the `GetRandom*CM()` functions in this package.
 // If this client is already connected, it is disconnected first.
-func (c *Client) ConnectTo(addr *netutil.PortAddr) error {
-	return c.ConnectToBind(addr, nil)
+func (c *Client) ConnectTo(addr *netutil.PortAddr, ctx context.Context) error {
+	return c.ConnectToBind(addr, nil, ctx)
 }
 
 // Connects to a specific server, and binds to a specified local IP
 // If this client is already connected, it is disconnected first.
-func (c *Client) ConnectToBind(addr *netutil.PortAddr, local *net.TCPAddr) error {
+func (c *Client) ConnectToBind(addr *netutil.PortAddr, local *net.TCPAddr, ctx context.Context) error {
 	c.Disconnect()
 
-	conn, err := dialTCP(local, addr.ToTCPAddr(), c.Proxy)
+	conn, err := dialTCP(local, addr.ToTCPAddr(), ctx, c.Proxy)
 	if err != nil {
 		c.Fatalf("Connect failed: %v", err)
 		return err
@@ -240,9 +244,9 @@ func (c *Client) Send(msg protocol.IMsg) {
 func (c *Client) Write(msg protocol.IMsg) error {
 
 	c.mutex.RLock()
-	conn := c.Conn
-	c.mutex.RUnlock()
-	if conn == nil {
+	defer c.mutex.RUnlock()
+
+	if c.Conn == nil {
 		return nil
 	}
 

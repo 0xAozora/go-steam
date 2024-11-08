@@ -1,6 +1,7 @@
 package steam
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"unsafe"
 
 	"github.com/0xAozora/go-steam/cryptoutil"
 	"github.com/0xAozora/go-steam/protocol"
@@ -30,14 +32,26 @@ type tcpConnection struct {
 	cipherMutex sync.RWMutex
 }
 
-func dialTCP(laddr, raddr *net.TCPAddr, proxy proxy.Dialer) (*tcpConnection, error) {
+func dialTCP(laddr, raddr *net.TCPAddr, ctx context.Context, proxy proxy.ContextDialer) (*tcpConnection, error) {
 
 	var conn net.Conn
 	var err error
 	if proxy != nil {
-		conn, err = proxy.Dial("tcp", raddr.String())
+		conn, err = proxy.DialContext(ctx, "tcp", raddr.String())
+		if err == nil {
+			if _, ok := conn.(*net.TCPConn); !ok {
+				// Try and unwrap underlying conn cause this lib needs tcp conn
+				ptr := unsafe.Add(unsafe.Pointer(&conn), uintptr(8))
+				tcpConn := **(**net.Conn)(ptr)
+				conn = tcpConn
+				if _, ok := conn.(*net.TCPConn); !ok {
+					return nil, fmt.Errorf("invalid conn")
+				}
+			}
+		}
 	} else {
-		conn, err = net.DialTCP("tcp", laddr, raddr)
+		dialer := net.Dialer{LocalAddr: laddr}
+		conn, err = dialer.DialContext(ctx, "tcp", raddr.String())
 	}
 
 	if err != nil {
