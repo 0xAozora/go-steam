@@ -279,8 +279,7 @@ func (c *Client) Write(msg protocol.IMsg) error {
 		return fmt.Errorf("error serializing message %v: %v", msg, err)
 	}
 
-	// Write
-	err = c.Conn.Write(c.writeBuf.Bytes())
+	err = conn.Write(c.writeBuf.Bytes())
 	c.writeBuf.Reset()
 	if err != nil {
 		return fmt.Errorf("error writing message %v: %v", msg, err)
